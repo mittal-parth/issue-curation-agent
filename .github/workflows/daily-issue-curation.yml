@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
       GH_READ_TOKEN: ${{ secrets.GH_PAT || github.token }}
       # This separation is done so that write can be restricted to the current repo while allowing reads everywhere.
@@ -128,15 +129,15 @@ jobs:
               continue
             fi
 
-            repo_recent_count="$(echo "$response" | jq '.data.repository.issues.nodes | length')"
+            repo_recent_count="$(echo "$response" | jq '(.data.repository.issues.nodes // []) | length')"
             repo_candidate_count="$(echo "$response" | jq -c --arg since "$since_iso" --argjson cap "$MAX_ISSUES_PER_REPO" '
               [
-                .data.repository.issues.nodes[]
+                (.data.repository.issues.nodes // [])[]
                 | select(.createdAt >= $since)
-                | select((.assignees.nodes | length) == 0)
+                | select(((.assignees.nodes // []) | length) == 0)
                 | select(
                     ([
-                      .timelineItems.nodes[]?
+                      (.timelineItems.nodes // [])[]
                       | if .__typename == "CrossReferencedEvent" then .source else .subject end
                       | select(.__typename == "PullRequest" and .state == "OPEN")
                     ] | length) == 0
@@ -146,19 +147,19 @@ jobs:
             echo "Repo ${repo}: recent_open=${repo_recent_count}, candidates_after_filters=${repo_candidate_count}"
 
             echo "$response" | jq -c --arg repo "$repo" '
-              .data.repository.issues.nodes[]
+              (.data.repository.issues.nodes // [])[]
               | . + {repo: $repo}
             ' >> all_recent.ndjson
 
             echo "$response" | jq -c --arg repo "$repo" --arg since "$since_iso" --argjson cap "$MAX_ISSUES_PER_REPO" '
               [
-                .data.repository.issues.nodes[]
+                (.data.repository.issues.nodes // [])[]
                 | . + {repo: $repo}
                 | select(.createdAt >= $since)
-                | select((.assignees.nodes | length) == 0)
+                | select(((.assignees.nodes // []) | length) == 0)
                 | select(
                     ([
-                      .timelineItems.nodes[]?
+                      (.timelineItems.nodes // [])[]
                       | if .__typename == "CrossReferencedEvent" then .source else .subject end
                       | select(.__typename == "PullRequest" and .state == "OPEN")
                     ] | length) == 0
