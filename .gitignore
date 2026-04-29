@@ -4,3 +4,4 @@ all_recent.ndjson
 candidates.ndjson
 picks.ndjson
 skipped.ndjson
+*.json

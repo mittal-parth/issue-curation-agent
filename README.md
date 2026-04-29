@@ -22,17 +22,20 @@ An AI agent that finds issues to work on across open source repositories.
 
 ### Repository Variables
 
-- `REPOS`: comma-separated `owner/name` list  
+- `REPOS`: comma-separated `owner/name` list to define which repositories are scanned  
   Example: `facebook/react,vercel/next.js,denoland/deno`
-- `LOOKBACK_HOURS` (optional): default `24`
-- `MAX_ISSUES_PER_REPO` (optional): default `20`
+- `LOOKBACK_HOURS` (optional): default `24`; controls how far back to look for newly opened issues
+- `MAX_ISSUES_PER_REPO` (optional): default `20`; caps candidate volume per repo to keep runs bounded
+- `CURATION_MODEL` (optional): default `gpt-5.2`; selects the model used by Cursor CLI for issue grading
+- `WRITE_TO_SHEET` (optional): default `true`; toggles whether picked issues are appended to Google Sheets
+- `CREATE_REPORT_ISSUE` (optional): default `false`; toggles creation of the daily summary GitHub issue
 
 ### Repository Secrets
 
-- `CURSOR_API_KEY` - required for `agent -p`
-- `GOOGLE_SHEETS_ID` - optional but recommended
-- `SHEETS_CREDENTIALS` - optional but recommended (Google service-account JSON)
-- `GH_PAT` - optional; improves GitHub API rate limits for cross-repo reads
+- `CURSOR_API_KEY` - required so the workflow can use the Cursor CLI to curate issues 
+- `GOOGLE_SHEETS_ID` - required only when sheet writing is enabled; identifies the target spreadsheet
+- `GOOGLE_SHEETS_CREDENTIALS` - required only when sheet writing is enabled; authenticates to Google Sheets (service-account JSON)
+- `GH_PAT` - optional; raises GitHub read API limits for cross-repo querying (falls back to `github.token` if omitted)
 
 If Sheets secrets are not set, the workflow still runs and creates the GitHub issue report.
 
@@ -47,7 +50,11 @@ The workflow appends to `Sheet1!A:H`:
 ## Triggering
 
 - Scheduled: daily at `06:00 UTC`
-- Manual: `workflow_dispatch` with optional `repos` and `lookback_hours` overrides
+- Manual: `workflow_dispatch` with optional overrides:
+  - `repos`
+  - `lookback_hours`
+  - `write_to_sheet` (default `true`)
+  - `create_report_issue` (default `false`)
 
 ## Notes
 

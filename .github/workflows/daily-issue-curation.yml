@@ -13,6 +13,16 @@ on:
         description: "How many hours back to look for issues. Default is 24 hours."
         required: false
         type: string
+      write_to_sheet:
+        description: "Write picks to Google Sheet. Default true"
+        required: false
+        type: boolean
+        default: true
+      create_report_issue:
+        description: "Create daily report as GitHub issue. Created issue will be visible in the actual issues as a linked issue. Default false"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,7 +43,9 @@ jobs:
       MAX_ISSUES_PER_REPO: ${{ vars.MAX_ISSUES_PER_REPO || '20' }}
       CURATION_MODEL: ${{ vars.CURATION_MODEL || 'gpt-5.2' }}
       GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
-      SHEETS_CREDENTIALS: ${{ secrets.SHEETS_CREDENTIALS }}
+      GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
+      WRITE_TO_SHEET: ${{ github.event.inputs.write_to_sheet || vars.WRITE_TO_SHEET || 'true' }}
+      CREATE_REPORT_ISSUE: ${{ github.event.inputs.create_report_issue || vars.CREATE_REPORT_ISSUE || 'false' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -239,8 +251,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "Starting Google Sheets append stage..."
-          if [ -z "${GOOGLE_SHEETS_ID:-}" ] || [ -z "${SHEETS_CREDENTIALS:-}" ]; then
-            echo "Skipping Google Sheets append (GOOGLE_SHEETS_ID or SHEETS_CREDENTIALS missing)."
+          if [ "${WRITE_TO_SHEET,,}" != "true" ]; then
+            echo "Skipping Google Sheets append (WRITE_TO_SHEET is not true)."
+            exit 0
+          fi
+          if [ -z "${GOOGLE_SHEETS_ID:-}" ] || [ -z "${GOOGLE_SHEETS_CREDENTIALS:-}" ]; then
+            echo "Skipping Google Sheets append (GOOGLE_SHEETS_ID or GOOGLE_SHEETS_CREDENTIALS missing)."
             exit 0
           fi
           umask 077
@@ -251,7 +267,7 @@ jobs:
             exit 0
           fi
 
-          printf '%s' "${SHEETS_CREDENTIALS}" > sa.json
+          printf '%s' "${GOOGLE_SHEETS_CREDENTIALS}" > sa.json
           private_key="$(jq -r '.private_key' sa.json)"
           client_email="$(jq -r '.client_email' sa.json)"
           token_uri="$(jq -r '.token_uri // "https://oauth2.googleapis.com/token"' sa.json)"
@@ -307,6 +323,10 @@ jobs:
       - name: Create GitHub issue report
         run: |
           set -euo pipefail
+          if [ "${CREATE_REPORT_ISSUE,,}" != "true" ]; then
+            echo "Skipping GitHub issue report (CREATE_REPORT_ISSUE is not true)."
+            exit 0
+          fi
           echo "Creating daily GitHub issue report..."
           run_date="$(date -u +%Y-%m-%d)"
           repos_scanned="$(jq -r '.repos_scanned' stats.json)"
@@ -365,7 +385,7 @@ jobs:
           issue_payload="$(jq -nc \
             --arg title "Daily issue picks - ${run_date} (${pick_count} picks across ${repos_scanned} repos)" \
             --arg body "$(cat report.md)" \
-            '{title:$title, body:$body, labels:["daily-picks","automation"]}')"
+            '{title:$title, body:$body, labels:["automation"]}')"
 
           created_number="$(curl -sS -X POST \
             -H "Authorization: Bearer ${GH_WRITE_TOKEN}" \
