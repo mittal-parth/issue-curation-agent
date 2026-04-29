@@ -247,7 +247,7 @@ jobs:
           jq -s '.' skipped.ndjson > skipped.json
           echo "Analysis complete. Picks: $(jq 'length' picks.json), skipped: $(jq 'length' skipped.json)"
 
-      - name: Append picks to Google Sheet
+      - name: Append curation results to Google Sheets tabs
         run: |
           set -euo pipefail
           echo "Starting Google Sheets append stage..."
@@ -262,8 +262,9 @@ jobs:
           umask 077
           trap 'rm -f sa.json key.pem' EXIT
           pick_count="$(jq 'length' picks.json)"
-          if [ "$pick_count" -eq 0 ]; then
-            echo "No picks to append."
+          skip_count="$(jq 'length' skipped.json)"
+          if [ "$pick_count" -eq 0 ] && [ "$skip_count" -eq 0 ]; then
+            echo "No curation results to append."
             exit 0
           fi
 
@@ -297,28 +298,59 @@ jobs:
             exit 1
           fi
 
+          ensure_sheet_tab() {
+            sheet_tab="$1"
+            spreadsheet_meta="$(curl -sS -X GET "https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEETS_ID}?fields=sheets.properties.title" \
+              -H "Authorization: Bearer ${access_token}")"
+            if echo "$spreadsheet_meta" | jq -e --arg t "$sheet_tab" '.sheets[]?.properties.title == $t' >/dev/null; then
+              echo "Sheet tab ${sheet_tab} already exists."
+              return 0
+            fi
+
+            create_body="$(jq -nc --arg t "$sheet_tab" '{requests:[{addSheet:{properties:{title:$t}}}]}')"
+            curl -sS -X POST "https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEETS_ID}:batchUpdate" \
+              -H "Authorization: Bearer ${access_token}" \
+              -H "Content-Type: application/json" \
+              -d "$create_body" >/dev/null
+            echo "Created missing sheet tab ${sheet_tab}."
+          }
+
+          ensure_sheet_tab Accepted
+          ensure_sheet_tab Rejected
+
           run_date="$(date -u +%Y-%m-%d)"
-          values_json="$(jq -c --arg date "$run_date" '
-            [.[] | [
-              $date,
-              .repo,
-              (.number|tostring),
-              .title,
-              .url,
-              (.analysis.difficulty // "medium"),
-              (.analysis.reason // ""),
-              ""
-            ]]
-          ' picks.json)"
+          append_rows() {
+            file="$1"
+            sheet_tab="$2"
+            row_count="$(jq 'length' "$file")"
+            if [ "$row_count" -eq 0 ]; then
+              echo "No rows for ${sheet_tab}; skipping."
+              return 0
+            fi
 
-          body="$(jq -nc --argjson values "$values_json" '{values:$values, majorDimension:"ROWS"}')"
-          append_url="https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEETS_ID}/values/Sheet1!A:H:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
+            values_json="$(jq -c --arg date "$run_date" '
+              [.[] | [
+                $date,
+                .repo,
+                .title,
+                .url,
+                (.analysis.difficulty // "medium"),
+                (.analysis.reason // ""),
+                ""
+              ]]
+            ' "$file")"
+            body="$(jq -nc --argjson values "$values_json" '{values:$values, majorDimension:"ROWS"}')"
+            append_url="https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEETS_ID}/values/${sheet_tab}!A:G:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
 
-          curl -sS -X POST "$append_url" \
-            -H "Authorization: Bearer ${access_token}" \
-            -H "Content-Type: application/json" \
-            -d "$body" >/dev/null
-          echo "Appended ${pick_count} picks to Google Sheet."
+            curl -sS -X POST "$append_url" \
+              -H "Authorization: Bearer ${access_token}" \
+              -H "Content-Type: application/json" \
+              -d "$body" >/dev/null
+            echo "Appended ${row_count} rows to ${sheet_tab}."
+          }
+
+          append_rows picks.json Accepted
+          append_rows skipped.json Rejected
 
       - name: Create GitHub issue report
         run: |

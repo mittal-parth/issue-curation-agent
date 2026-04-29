@@ -41,9 +41,16 @@ If Sheets secrets are not set, the workflow still runs and creates the GitHub is
 
 ## Google Sheet format
 
-The workflow appends to `Sheet1!A:H`:
+Use two tabs in the same spreadsheet:
 
-`date | repo | issue# | title | url | difficulty | reason | status`
+- `Accepted` (picked issues)
+- `Rejected` (skipped issues)
+
+If either tab is missing, the workflow auto-creates it.
+
+The workflow appends to `A:G` in both tabs:
+
+`date | repo | title | url | difficulty | reason | status`
 
 `status` is intentionally blank so you can track progress manually.
 
