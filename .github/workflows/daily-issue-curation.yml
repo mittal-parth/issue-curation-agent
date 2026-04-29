@@ -312,15 +312,34 @@ jobs:
           candidates_after_filters="$(jq -r '.candidates_after_filters' stats.json)"
           pick_count="$(jq 'length' picks.json)"
 
-          summary_picks="$(jq -r '
-            if length == 0 then
-              "No picks today."
+          considered_checklist="$(jq -r -s '
+            (.[0] // []) as $candidates |
+            (.[1] // []) as $picks |
+            ($picks | map((.repo + "#" + (.number|tostring))) | INDEX(.)) as $picked_index |
+            if ($candidates | length) == 0 then
+              "No issues were considered today."
             else
-              group_by(.repo)[] |
-              "### " + .[0].repo + "\n" +
-              (map("- [#" + (.number|tostring) + " " + .title + "](" + .url + ") - " + (.analysis.difficulty // "medium") + "\n  > " + (.analysis.reason // "No reason provided")) | join("\n"))
+              ($candidates | group_by(.repo)[] |
+                "### " + .[0].repo + "\n" +
+                (
+                  map(
+                    . as $issue |
+                    ($issue.repo + "#" + ($issue.number|tostring)) as $key |
+                    (if ($picked_index[$key]) then "- [x] " else "- [ ] " end) +
+                    "[#" + ($issue.number|tostring) + " " + $issue.title + "](" + $issue.url + ")" +
+                    (
+                      if ($picked_index[$key]) then
+                        " - " + (($picked_index[$key].analysis.difficulty) // "medium") +
+                        "\n  > " + (($picked_index[$key].analysis.reason) // "No reason provided")
+                      else
+                        ""
+                      end
+                    )
+                  ) | join("\n")
+                )
+              ) | join("\n\n")
             end
-          ' picks.json)"
+          ' candidates.json picks.json)"
 
           skipped_reasons="$(jq -r '
             [.[].analysis.reason // "other"] | group_by(.) | map({"reason": .[0], "count": length}) | sort_by(-.count) | .[:5]
@@ -334,8 +353,8 @@ jobs:
           - After deterministic filters: ${candidates_after_filters}
           - After agent analysis: ${pick_count} picks
 
-          ## Picks
-          ${summary_picks}
+          ## Pick Checklist (considered issues)
+          ${considered_checklist}
 
           ## Top Skip Reasons
           ${skipped_reasons}
