@@ -323,7 +323,7 @@ jobs:
                 "### " + .[0].repo + "\n" +
                 (
                   map(
-                    "- [x] [#" + (.number|tostring) + " " + .title + "](" + .url + ") - " +
+                    "- [ ] [#" + (.number|tostring) + " " + .title + "](" + .url + ") - " +
                     (.analysis.difficulty // "medium") + "\n  > " + (.analysis.reason // "No reason provided")
                   ) | join("\n")
                 )
