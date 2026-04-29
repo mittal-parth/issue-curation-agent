@@ -234,10 +234,13 @@ jobs:
           echo "Analysis complete. Picks: $(jq 'length' picks.json), skipped: $(jq 'length' skipped.json)"
 
       - name: Append picks to Google Sheet
-        if: ${{ secrets.GOOGLE_SHEETS_ID != '' && secrets.SHEETS_CREDENTIALS != '' }}
         run: |
           set -euo pipefail
           echo "Starting Google Sheets append stage..."
+          if [ -z "${GOOGLE_SHEETS_ID:-}" ] || [ -z "${SHEETS_CREDENTIALS:-}" ]; then
+            echo "Skipping Google Sheets append (GOOGLE_SHEETS_ID or SHEETS_CREDENTIALS missing)."
+            exit 0
+          fi
           umask 077
           trap 'rm -f sa.json key.pem' EXIT
           pick_count="$(jq 'length' picks.json)"
