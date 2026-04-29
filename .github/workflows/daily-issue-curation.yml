@@ -30,6 +30,7 @@ jobs:
       REPOS: ${{ github.event.inputs.repos || vars.REPOS || '' }}
       LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours || vars.LOOKBACK_HOURS || '24' }}
       MAX_ISSUES_PER_REPO: ${{ vars.MAX_ISSUES_PER_REPO || '20' }}
+      CURATION_MODEL: ${{ vars.CURATION_MODEL || 'gpt-5.2' }}
       GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
       SHEETS_CREDENTIALS: ${{ secrets.SHEETS_CREDENTIALS }}
     steps:
@@ -210,7 +211,7 @@ jobs:
           EOF
             )"
 
-            model_result="$(agent -p --force --output-format json --model gpt-5.2 "$prompt" | jq -r '.result')"
+            model_result="$(agent -p --force --output-format json --model "${CURATION_MODEL}" "$prompt" | jq -r '.result')"
 
             parsed="$(printf '%s' "$model_result" | jq -c . 2>/dev/null || true)"
             if [ -z "$parsed" ]; then
@@ -315,29 +316,31 @@ jobs:
           considered_checklist="$(jq -r -s '
             (.[0] // []) as $candidates |
             (.[1] // []) as $picks |
-            ($picks | map((.repo + "#" + (.number|tostring))) | INDEX(.)) as $picked_index |
+            ($picks | map({key:(.repo + "#" + (.number|tostring)), value:.}) | from_entries) as $picked_index |
             if ($candidates | length) == 0 then
               "No issues were considered today."
             else
-              ($candidates | group_by(.repo)[] |
-                "### " + .[0].repo + "\n" +
-                (
-                  map(
-                    . as $issue |
-                    ($issue.repo + "#" + ($issue.number|tostring)) as $key |
-                    (if ($picked_index[$key]) then "- [x] " else "- [ ] " end) +
-                    "[#" + ($issue.number|tostring) + " " + $issue.title + "](" + $issue.url + ")" +
-                    (
-                      if ($picked_index[$key]) then
-                        " - " + (($picked_index[$key].analysis.difficulty) // "medium") +
-                        "\n  > " + (($picked_index[$key].analysis.reason) // "No reason provided")
-                      else
-                        ""
-                      end
-                    )
-                  ) | join("\n")
-                )
-              ) | join("\n\n")
+              ([
+                $candidates
+                | group_by(.repo)[]
+                | "### " + .[0].repo + "\n" +
+                  (
+                    map(
+                      . as $issue |
+                      ($issue.repo + "#" + ($issue.number|tostring)) as $key |
+                      (if ($picked_index[$key]) then "- [x] " else "- [ ] " end) +
+                      "[#" + ($issue.number|tostring) + " " + $issue.title + "](" + $issue.url + ")" +
+                      (
+                        if ($picked_index[$key]) then
+                          " - " + (($picked_index[$key].analysis.difficulty) // "medium") +
+                          "\n  > " + (($picked_index[$key].analysis.reason) // "No reason provided")
+                        else
+                          ""
+                        end
+                      )
+                    ) | join("\n")
+                  )
+              ] | join("\n\n"))
             end
           ' candidates.json picks.json)"
 
