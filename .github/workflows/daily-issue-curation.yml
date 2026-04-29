@@ -1,0 +1,311 @@
+name: Daily Issue Curation
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Optional override for repos (owner/name,comma-separated)"
+        required: false
+        type: string
+      lookback_hours:
+        description: "How many hours back to look for issues. Default is 24 hours."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  curate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      GH_READ_TOKEN: ${{ secrets.GH_PAT || github.token }}
+      # This separation is done so that write can be restricted to the current repo while allowing reads everywhere.
+      GH_WRITE_TOKEN: ${{ github.token }}
+      REPOS: ${{ github.event.inputs.repos || vars.REPOS || '' }}
+      LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours || vars.LOOKBACK_HOURS || '24' }}
+      MAX_ISSUES_PER_REPO: ${{ vars.MAX_ISSUES_PER_REPO || '20' }}
+      GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
+      SHEETS_CREDENTIALS: ${{ secrets.SHEETS_CREDENTIALS }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          if [ -z "${CURSOR_API_KEY:-}" ]; then
+            echo "CURSOR_API_KEY is required. Add it as a repository secret."
+            exit 1
+          fi
+          if [ -z "${GH_READ_TOKEN:-}" ]; then
+            echo "GH_READ_TOKEN is required. Ensure GH_PAT is set or github.token is available."
+            exit 1
+          fi
+          if [ -z "${GH_WRITE_TOKEN:-}" ]; then
+            echo "GH_WRITE_TOKEN is required. Ensure github.token is available."
+            exit 1
+          fi
+
+      - name: Install Cursor CLI
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.cursor/bin" >> "$GITHUB_PATH"
+
+      - name: Deterministic issue fetch and filtering
+        run: |
+          set -euo pipefail
+
+          if [ -z "${REPOS}" ]; then
+            echo "vars.REPOS is required."
+            exit 1
+          fi
+
+          since_iso="$(date -u -d "${LOOKBACK_HOURS} hours ago" +"%Y-%m-%dT%H:%M:%SZ")"
+          mkdir -p analysis
+          : > all_recent.ndjson
+          : > candidates.ndjson
+
+          readarray -t repo_list < <(printf '%s' "${REPOS}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d')
+          repo_count="${#repo_list[@]}"
+
+          query="$(cat <<'EOF'
+          query($owner:String!, $name:String!, $since:DateTime!) {
+            repository(owner:$owner, name:$name) {
+              issues(first:50, filterBy:{since:$since, states:OPEN}, orderBy:{field:CREATED_AT, direction:DESC}) {
+                nodes {
+                  number
+                  title
+                  url
+                  createdAt
+                  author { login }
+                  assignees(first:5) { nodes { login } }
+                  labels(first:20) { nodes { name } }
+                  body
+                  comments(last:20) { nodes { author { login } body } }
+                  timelineItems(first:30, itemTypes:[CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {
+                    nodes {
+                      __typename
+                      ... on CrossReferencedEvent { source { __typename ... on PullRequest { number state isDraft url } } }
+                      ... on ConnectedEvent { subject { __typename ... on PullRequest { number state isDraft url } } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          EOF
+          )"
+
+          for repo in "${repo_list[@]}"; do
+            owner="${repo%%/*}"
+            name="${repo##*/}"
+            echo "Fetching ${repo}"
+
+            payload="$(jq -n --arg q "$query" --arg owner "$owner" --arg name "$name" --arg since "$since_iso" \
+              '{query:$q, variables:{owner:$owner, name:$name, since:$since}}')"
+
+            response="$(curl -sS -X POST \
+              -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$payload" \
+              https://api.github.com/graphql)"
+
+            if echo "$response" | jq -e '.errors' >/dev/null; then
+              echo "GraphQL error for ${repo}:"
+              echo "$response" | jq '.errors'
+              continue
+            fi
+
+            echo "$response" | jq -c --arg repo "$repo" '
+              .data.repository.issues.nodes[]
+              | . + {repo: $repo}
+            ' >> all_recent.ndjson
+
+            echo "$response" | jq -c --arg repo "$repo" --arg since "$since_iso" --argjson cap "$MAX_ISSUES_PER_REPO" '
+              [
+                .data.repository.issues.nodes[]
+                | . + {repo: $repo}
+                | select(.createdAt >= $since)
+                | select((.assignees.nodes | length) == 0)
+                | select(
+                    ([
+                      .timelineItems.nodes[]?
+                      | if .__typename == "CrossReferencedEvent" then .source else .subject end
+                      | select(.__typename == "PullRequest" and .state == "OPEN")
+                    ] | length) == 0
+                  )
+              ][0:$cap][]
+            ' >> candidates.ndjson
+          done
+
+          jq -s '.' all_recent.ndjson > all_recent.json
+          jq -s '.' candidates.ndjson > candidates.json
+
+          jq -n \
+            --argjson repoCount "$repo_count" \
+            --argjson recentCount "$(jq 'length' all_recent.json)" \
+            --argjson candidateCount "$(jq 'length' candidates.json)" \
+            '{repos_scanned:$repoCount, issues_recent:$recentCount, candidates_after_filters:$candidateCount}' > stats.json
+
+      - name: Analyze candidates with Cursor CLI
+        run: |
+          set -euo pipefail
+          : > picks.ndjson
+          : > skipped.ndjson
+
+          count="$(jq 'length' candidates.json)"
+          if [ "${count}" -eq 0 ]; then
+            echo "No candidates after deterministic filtering."
+            jq -s '.' picks.ndjson > picks.json
+            jq -s '.' skipped.ndjson > skipped.json
+            exit 0
+          fi
+
+          jq -c '.[]' candidates.json | while IFS= read -r issue; do
+            prompt="$(cat <<EOF
+          Analyze this GitHub issue using AGENTS.md in the repository root.
+          Do not call any tools. Do not browse the network.
+          Return exactly one minified JSON object with keys:
+          verdict (pick|skip), reason (string), difficulty (easy|medium|hard).
+
+          ISSUE_JSON:
+          ${issue}
+          EOF
+            )"
+
+            model_result="$(agent -p --output-format json --model gpt-5.2 "$prompt" | jq -r '.result')"
+
+            parsed="$(printf '%s' "$model_result" | jq -c . 2>/dev/null || true)"
+            if [ -z "$parsed" ]; then
+              parsed='{"verdict":"skip","reason":"invalid model output","difficulty":"medium"}'
+            fi
+
+            combined="$(echo "$issue" | jq -c --argjson a "$parsed" '. + {analysis:$a}')"
+
+            if echo "$combined" | jq -e '.analysis.verdict == "pick"' >/dev/null; then
+              echo "$combined" >> picks.ndjson
+            else
+              echo "$combined" >> skipped.ndjson
+            fi
+          done
+
+          jq -s '.' picks.ndjson > picks.json
+          jq -s '.' skipped.ndjson > skipped.json
+
+      - name: Append picks to Google Sheet
+        if: ${{ secrets.GOOGLE_SHEETS_ID != '' && secrets.SHEETS_CREDENTIALS != '' }}
+        run: |
+          set -euo pipefail
+          pick_count="$(jq 'length' picks.json)"
+          if [ "$pick_count" -eq 0 ]; then
+            echo "No picks to append."
+            exit 0
+          fi
+
+          printf '%s' "${SHEETS_CREDENTIALS}" > sa.json
+          private_key="$(jq -r '.private_key' sa.json)"
+          client_email="$(jq -r '.client_email' sa.json)"
+          token_uri="$(jq -r '.token_uri // "https://oauth2.googleapis.com/token"' sa.json)"
+          now="$(date +%s)"
+          exp="$((now + 3600))"
+
+          b64url() {
+            openssl base64 -A | tr '+/' '-_' | tr -d '='
+          }
+
+          header="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)"
+          payload="$(jq -nc --arg iss "$client_email" --arg scope "https://www.googleapis.com/auth/spreadsheets" --arg aud "$token_uri" --argjson iat "$now" --argjson exp "$exp" \
+            '{iss:$iss,scope:$scope,aud:$aud,iat:$iat,exp:$exp}' | b64url)"
+          unsigned="${header}.${payload}"
+
+          printf '%s\n' "$private_key" > key.pem
+          signature="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign key.pem | b64url)"
+          assertion="${unsigned}.${signature}"
+
+          access_token="$(curl -sS -X POST "$token_uri" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+            --data-urlencode "assertion=${assertion}" | jq -r '.access_token')"
+
+          if [ -z "${access_token}" ] || [ "${access_token}" = "null" ]; then
+            echo "Failed to obtain Google access token."
+            exit 1
+          fi
+
+          run_date="$(date -u +%Y-%m-%d)"
+          values_json="$(jq -c --arg date "$run_date" '
+            [.[] | [
+              $date,
+              .repo,
+              (.number|tostring),
+              .title,
+              .url,
+              (.analysis.difficulty // "medium"),
+              (.analysis.reason // ""),
+              ""
+            ]]
+          ' picks.json)"
+
+          body="$(jq -nc --argjson values "$values_json" '{values:$values, majorDimension:"ROWS"}')"
+          append_url="https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEETS_ID}/values/Sheet1!A:H:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
+
+          curl -sS -X POST "$append_url" \
+            -H "Authorization: Bearer ${access_token}" \
+            -H "Content-Type: application/json" \
+            -d "$body" >/dev/null
+
+      - name: Create GitHub issue report
+        run: |
+          set -euo pipefail
+          run_date="$(date -u +%Y-%m-%d)"
+          repos_scanned="$(jq -r '.repos_scanned' stats.json)"
+          issues_recent="$(jq -r '.issues_recent' stats.json)"
+          candidates_after_filters="$(jq -r '.candidates_after_filters' stats.json)"
+          pick_count="$(jq 'length' picks.json)"
+
+          summary_picks="$(jq -r '
+            if length == 0 then
+              "No picks today."
+            else
+              group_by(.repo)[] |
+              "### " + .[0].repo + "\n" +
+              (map("- [#" + (.number|tostring) + " " + .title + "](" + .url + ") - " + (.analysis.difficulty // "medium") + "\n  > " + (.analysis.reason // "No reason provided")) | join("\n"))
+            end
+          ' picks.json)"
+
+          skipped_reasons="$(jq -r '
+            [.[].analysis.reason // "other"] | group_by(.) | map({"reason": .[0], "count": length}) | sort_by(-.count) | .[:5]
+            | if length == 0 then "- none" else map("- " + (.count|tostring) + "x " + .reason) | join("\n") end
+          ' skipped.json)"
+
+          cat > report.md <<EOF
+          ## Summary
+          - Repos scanned: ${repos_scanned}
+          - Issues opened in last ${LOOKBACK_HOURS}h: ${issues_recent}
+          - After deterministic filters: ${candidates_after_filters}
+          - After agent analysis: ${pick_count} picks
+
+          ## Picks
+          ${summary_picks}
+
+          ## Top Skip Reasons
+          ${skipped_reasons}
+          EOF
+
+          issue_payload="$(jq -nc \
+            --arg title "Daily issue picks - ${run_date} (${pick_count} picks across ${repos_scanned} repos)" \
+            --arg body "$(cat report.md)" \
+            '{title:$title, body:$body, labels:["daily-picks","automation"]}')"
+
+          created_number="$(curl -sS -X POST \
+            -H "Authorization: Bearer ${GH_WRITE_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" \
+            -d "$issue_payload" | jq -r '.number')"
+

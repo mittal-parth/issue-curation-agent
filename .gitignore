@@ -1,0 +1,6 @@
+analysis/
+report.md
+all_recent.ndjson
+candidates.ndjson
+picks.ndjson
+skipped.ndjson
