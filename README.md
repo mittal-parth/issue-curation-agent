@@ -63,7 +63,7 @@ The workflow appends to `A:G` in both tabs:
   - `lookback_hours`
   - `write_to_sheet` (default `true`)
   - `create_report_issue` (default `false`)
-  - `include_assigned_issues` (boolean; default `false` on manual runs). Scheduled runs read `vars.INCLUDE_ASSIGNED_ISSUES` (`true` / `false` strings).
+  - `include_assigned_issues` (default `false`; uses `vars.INCLUDE_ASSIGNED_ISSUES` for scheduled runs)
   - `curation_model` (blank uses `vars.CURATION_MODEL` or `gpt-5.2`)
 
 ## Notes
