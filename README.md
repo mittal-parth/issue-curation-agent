@@ -27,7 +27,7 @@ An AI agent that finds issues to work on across open source repositories.
 - `LOOKBACK_HOURS` (optional): default `24`; controls how far back to look for newly opened issues
 - `MAX_ISSUES_PER_REPO` (optional): default `20`; caps candidate volume per repo to keep runs bounded
 - `CURATION_MODEL` (optional): default `gpt-5.2`; selects the model used by Cursor CLI for issue grading
-- `INCLUDE_ASSIGNED_ISSUES` (optional): default `false` — only unassigned issues become candidates; set to `true` to also send assigned issues to the model (open PR filter unchanged). Use the strings `true` or `false`.
+- `INCLUDE_ASSIGNED_ISSUES` (optional): default `false`; only unassigned issues become candidates (set to `true` to also include assigned issues). Use the strings `true` or `false`.
 - `WRITE_TO_SHEET` (optional): default `true`; toggles whether picked issues are appended to Google Sheets
 - `CREATE_REPORT_ISSUE` (optional): default `false`; toggles creation of the daily summary GitHub issue
 
