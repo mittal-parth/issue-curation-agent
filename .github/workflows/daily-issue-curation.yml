@@ -23,6 +23,15 @@ on:
         required: false
         type: boolean
         default: false
+      include_assigned_issues:
+        description: "If true, assigned issues are still candidates (open PRs still excluded)"
+        required: false
+        type: boolean
+        default: false
+      curation_model:
+        description: "Cursor CLI --model override. Blank uses vars.CURATION_MODEL or default gpt-5.2."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -41,7 +50,8 @@ jobs:
       REPOS: ${{ github.event.inputs.repos || vars.REPOS || '' }}
       LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours || vars.LOOKBACK_HOURS || '24' }}
       MAX_ISSUES_PER_REPO: ${{ vars.MAX_ISSUES_PER_REPO || '20' }}
-      CURATION_MODEL: ${{ vars.CURATION_MODEL || 'gpt-5.2' }}
+      CURATION_MODEL: ${{ github.event.inputs.curati false is not lost to ||). Scheduled: repo var.
+      INCLUDE_ASSIGNED_ISSUES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', github.event.inputs.include_assigned_issues) || vars.INCLUDE_ASSIGNED_ISSUES || 'false' }}
       GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
       GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
       WRITE_TO_SHEET: ${{ github.event.inputs.write_to_sheet || vars.WRITE_TO_SHEET || 'true' }}
@@ -93,6 +103,20 @@ jobs:
           echo "Configured repos: ${repo_count}"
           echo "Lookback window: ${LOOKBACK_HOURS}h"
 
+          include_assigned_raw="${INCLUDE_ASSIGNED_ISSUES:-false}"
+          include_assigned_lc="$(printf '%s' "$include_assigned_raw" | tr '[:upper:]' '[:lower:]')"
+          case "$include_assigned_lc" in
+            true|1|yes) include_assigned_json="true" ;;
+            false|0|no|"")
+              include_assigned_json="false"
+              ;;
+            *)
+              echo "Unknown INCLUDE_ASSIGNED_ISSUES value=${include_assigned_raw}; defaulting to false."
+              include_assigned_json="false"
+              ;;
+          esac
+          echo "Include assigned issues: ${include_assigned_json}"
+
           query="$(cat <<'EOF'
           query($owner:String!, $name:String!, $since:DateTime!) {
             repository(owner:$owner, name:$name) {
@@ -142,11 +166,11 @@ jobs:
             fi
 
             repo_recent_count="$(echo "$response" | jq '(.data.repository.issues.nodes // []) | length')"
-            repo_candidate_count="$(echo "$response" | jq -c --arg since "$since_iso" --argjson cap "$MAX_ISSUES_PER_REPO" '
+            repo_candidate_count="$(echo "$response" | jq -c --arg since "$since_iso" --argjson cap "$MAX_ISSUES_PER_REPO" --argjson includeAssigned "$include_assigned_json" '
               [
                 (.data.repository.issues.nodes // [])[]
                 | select(.createdAt >= $since)
-                | select(((.assignees.nodes // []) | length) == 0)
+                | select($includeAssigned or ((.assignees.nodes // []) | length) == 0)
                 | select(
                     ([
                       (.timelineItems.nodes // [])[]
@@ -163,12 +187,12 @@ jobs:
               | . + {repo: $repo}
             ' >> all_recent.ndjson
 
-            echo "$response" | jq -c --arg repo "$repo" --arg since "$since_iso" --argjson cap "$MAX_ISSUES_PER_REPO" '
+            echo "$response" | jq -c --arg repo "$repo" --arg since "$since_iso" --argjson cap "$MAX_ISSUES_PER_REPO" --argjson includeAssigned "$include_assigned_json" '
               [
                 (.data.repository.issues.nodes // [])[]
                 | . + {repo: $repo}
                 | select(.createdAt >= $since)
-                | select(((.assignees.nodes // []) | length) == 0)
+                | select($includeAssigned or ((.assignees.nodes // []) | length) == 0)
                 | select(
                     ([
                       (.timelineItems.nodes // [])[]
@@ -194,6 +218,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Starting Cursor analysis stage..."
+          echo "Curation model: ${CURATION_MODEL}"
           : > picks.ndjson
           : > skipped.ndjson
 
