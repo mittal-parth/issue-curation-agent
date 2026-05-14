@@ -50,7 +50,7 @@ jobs:
       REPOS: ${{ github.event.inputs.repos || vars.REPOS || '' }}
       LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours || vars.LOOKBACK_HOURS || '24' }}
       MAX_ISSUES_PER_REPO: ${{ vars.MAX_ISSUES_PER_REPO || '20' }}
-      CURATION_MODEL: ${{ github.event.inputs.curati false is not lost to ||). Scheduled: repo var.
+      CURATION_MODEL: ${{ github.event.inputs.curation_model || vars.CURATION_MODEL || 'gpt-5.2' }}
       INCLUDE_ASSIGNED_ISSUES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', github.event.inputs.include_assigned_issues) || vars.INCLUDE_ASSIGNED_ISSUES || 'false' }}
       GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
       GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
