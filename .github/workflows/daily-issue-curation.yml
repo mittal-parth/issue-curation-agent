@@ -1,8 +1,8 @@
-name: Daily Issue Curation
+name: Issue Curation
 
 on:
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "0 6 */3 * *"
   workflow_dispatch:
     inputs:
       repos:
@@ -10,7 +10,7 @@ on:
         required: false
         type: string
       lookback_hours:
-        description: "How many hours back to look for issues. Default is 24 hours."
+        description: "How many hours back to look for issues. Default is 72 hours."
         required: false
         type: string
       write_to_sheet:
@@ -19,7 +19,7 @@ on:
         type: boolean
         default: true
       create_report_issue:
-        description: "Create daily report as GitHub issue. Created issue will be visible in the actual issues as a linked issue. Default false"
+        description: "Create curation report as GitHub issue. Created issue will be visible in the actual issues as a linked issue. Default false"
         required: false
         type: boolean
         default: false
@@ -48,7 +48,7 @@ jobs:
       # This separation is done so that write can be restricted to the current repo while allowing reads everywhere.
       GH_WRITE_TOKEN: ${{ github.token }}
       REPOS: ${{ github.event.inputs.repos || vars.REPOS || '' }}
-      LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours || vars.LOOKBACK_HOURS || '24' }}
+      LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours || vars.LOOKBACK_HOURS || '72' }}
       MAX_ISSUES_PER_REPO: ${{ vars.MAX_ISSUES_PER_REPO || '20' }}
       CURATION_MODEL: ${{ github.event.inputs.curation_model || vars.CURATION_MODEL || 'gpt-5.2' }}
       INCLUDE_ASSIGNED_ISSUES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', github.event.inputs.include_assigned_issues) || vars.INCLUDE_ASSIGNED_ISSUES || 'false' }}
@@ -384,7 +384,7 @@ jobs:
             echo "Skipping GitHub issue report (CREATE_REPORT_ISSUE is not true)."
             exit 0
           fi
-          echo "Creating daily GitHub issue report..."
+          echo "Creating GitHub issue report..."
           run_date="$(date -u +%Y-%m-%d)"
           repos_scanned="$(jq -r '.repos_scanned' stats.json)"
           issues_recent="$(jq -r '.issues_recent' stats.json)"
@@ -440,7 +440,7 @@ jobs:
           EOF
 
           issue_payload="$(jq -nc \
-            --arg title "Daily issue picks - ${run_date} (${pick_count} picks across ${repos_scanned} repos)" \
+            --arg title "Issue picks - ${run_date} (${pick_count} picks across ${repos_scanned} repos)" \
             --arg body "$(cat report.md)" \
             '{title:$title, body:$body, labels:["automation"]}')"
 

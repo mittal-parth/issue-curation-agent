@@ -1,17 +1,17 @@
-# Daily GitHub Issue Curator
+# GitHub Issue Curator
 
 An AI agent that finds issues to work on across open source repositories.
 
 ## What it does
 
 1. Reads configured repositories from `vars.REPOS`.
-2. Fetches issues opened in the last `LOOKBACK_HOURS` (default 24h).
+2. Fetches issues opened in the last `LOOKBACK_HOURS` (default 72h).
 3. Deterministically filters issues (see `INCLUDE_ASSIGNED_ISSUES`):
    - by default (`false`), excludes issues assigned to anyone; set to `true` to allow assigned issues as candidates
    - always excludes issues that already have linked open PRs
 4. Sends each remaining issue to Cursor CLI (`agent -p`) for quality screening.
 5. Appends picks to Google Sheets.
-6. Creates a daily GitHub Issue report with a glanceable summary.
+6. Optionally creates a GitHub Issue report with a glanceable summary.
 
 ## Files
 
@@ -24,12 +24,12 @@ An AI agent that finds issues to work on across open source repositories.
 
 - `REPOS`: comma-separated `owner/name` list to define which repositories are scanned  
   Example: `facebook/react,vercel/next.js,denoland/deno`
-- `LOOKBACK_HOURS` (optional): default `24`; controls how far back to look for newly opened issues
+- `LOOKBACK_HOURS` (optional): default `72`; controls how far back to look for newly opened issues
 - `MAX_ISSUES_PER_REPO` (optional): default `20`; caps candidate volume per repo to keep runs bounded
 - `CURATION_MODEL` (optional): default `gpt-5.2`; selects the model used by Cursor CLI for issue grading
 - `INCLUDE_ASSIGNED_ISSUES` (optional): default `false`; only unassigned issues become candidates (set to `true` to also include assigned issues). Use the strings `true` or `false`.
 - `WRITE_TO_SHEET` (optional): default `true`; toggles whether picked issues are appended to Google Sheets
-- `CREATE_REPORT_ISSUE` (optional): default `false`; toggles creation of the daily summary GitHub issue
+- `CREATE_REPORT_ISSUE` (optional): default `false`; toggles creation of the summary GitHub issue
 
 ### Repository Secrets
 
@@ -57,7 +57,7 @@ The workflow appends to `A:G` in both tabs:
 
 ## Triggering
 
-- Scheduled: daily at `06:00 UTC`
+- Scheduled: every 3 days at `06:00 UTC` (days 1, 4, 7, … of each month)
 - Manual: `workflow_dispatch` with optional overrides:
   - `repos`
   - `lookback_hours`
